@@ -171,7 +171,16 @@ class SocialMediaCog(commands.Cog, name="SocialMedia"):
             try:
                 post = await extract_post(self.session, url, platform)
             except ScrapingError:
-                await ctx.send("❌ ไม่สามารถดึงข้อมูลโพสต์ได้ โปรดตรวจสอบว่า URL ถูกต้องและโพสต์เป็นสาธารณะ")
+                if platform == "instagram":
+                    await ctx.send(
+                        "❌ ไม่สามารถดึงข้อมูลโพสต์ Instagram นี้ได้\n"
+                        "Instagram ไม่แสดงข้อมูลโพสต์ให้ระบบภายนอกโดยตรงอีกต่อไป "
+                        "(ไม่เกี่ยวกับว่าโพสต์เป็นสาธารณะหรือไม่)\n"
+                        "หากเป็นโพสต์จากบัญชีทางการของโรงเรียน ให้แอดมินตั้งค่า `META_IG_USER_ID` "
+                        "ตามคู่มือใน README เพื่อให้ดึงข้อมูลได้แม่นยำ"
+                    )
+                else:
+                    await ctx.send("❌ ไม่สามารถดึงข้อมูลโพสต์ได้ โปรดตรวจสอบว่า URL ถูกต้องและโพสต์เป็นสาธารณะ")
                 return
             except Exception:
                 log.exception("Unexpected error extracting social post from %s", url)

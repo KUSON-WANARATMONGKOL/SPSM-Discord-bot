@@ -18,10 +18,25 @@
   directly makes it the `__main__` module, so a plain `import bot` elsewhere
   would re-execute the whole file as a second module and create a second
   `Bot` instance.
-- `db.py` — SQLite persistence (events, suggestions, feedback, social media
-  channel + post log). `schema.sql` is a human-readable mirror of the same
-  tables; `db.py` is the source of truth and creates them automatically on
-  startup.
+- `db.py` — SQLite persistence (events + attendees, suggestions, feedback,
+  social media channel + post log, event announcement channel). `schema.sql`
+  is a human-readable mirror of the same tables; `db.py` is the source of
+  truth and creates them automatically on startup. Adding a column to an
+  existing table needs `_ensure_column(conn, table, column, ddl_type)` inside
+  `init_db()` in addition to the `CREATE TABLE IF NOT EXISTS` — that
+  statement is a no-op against a table that already exists (e.g. Railway's
+  live database from before your change), so a bare schema edit will pass in
+  local dev on a fresh `school_bot.db` and then silently not apply anywhere
+  the table was already created. `_ensure_column` reads `PRAGMA table_info`
+  and `ALTER TABLE ADD COLUMN`s only if missing, so it's safe to call every
+  startup on both old and new databases.
+- Event attendees are a proper join table (`event_attendees`), not a JSON
+  array column, deliberately: two people reacting within the same instant
+  would race on a read-modify-write of a JSON blob (both read the same
+  array, both append, the second write clobbers the first's addition). The
+  join table's `PRIMARY KEY (event_id, user_id)` makes concurrent
+  joins/leaves atomic — `db.add_attendee` returns `False` on a duplicate
+  instead of silently double-adding. Don't reintroduce a JSON attendee list.
 - `date_utils.py` — Thai/English date & time parsing for the event system.
 - `utils/social_scraper.py` — Instagram/Facebook metadata extraction: owned-
   account Graph API → Meta oEmbed → Open Graph fallback, in that order, for
@@ -40,7 +55,16 @@
   — and note that a check on a `commands.group`'s own callback does **not**
   apply to its subcommands, so decorate each admin subcommand individually
   (see `event_create`/`event_delete` vs. the plain `event_group` in
-  `cogs/events_cog.py`).
+  `cogs/events_cog.py`). This also applies to nested groups (`!event
+  channel` inside `!event`) — every leaf command needs its own decorator.
+- An announcement that's editable after posting (event embeds, suggestion
+  embeds) needs its message ID stored in the DB at creation time, then a
+  `_refresh_announcement`-style helper that re-fetches the row, rebuilds the
+  embed from a single shared builder function (`build_event_embed` in
+  `events_cog.py`), and calls `message.edit()`. Keep exactly one function
+  that builds that embed — every code path (create, edit, join, leave,
+  reaction listener) should call it, not duplicate its field list, or the
+  views will drift out of sync with each other.
 - Any command that acts on another member (`kick`, `mute`, `warn`) must go
   through `can_act_on()` to block self-targeting and acting on equal/higher
   roles.

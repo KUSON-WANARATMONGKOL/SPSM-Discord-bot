@@ -6,21 +6,34 @@
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id INTEGER NOT NULL,
-    channel_id INTEGER,
+    channel_id INTEGER,                     -- legacy: channel !event create was run in; superseded by announcement_channel_id
     name TEXT NOT NULL,
     event_date TEXT NOT NULL,              -- 'YYYY-MM-DD'
     event_time TEXT NOT NULL,              -- 'HH:MM' (24-hour)
     description TEXT NOT NULL DEFAULT '',
+    image_url TEXT,
+    announcement_channel_id INTEGER,        -- where the live announcement embed is posted
+    announcement_message_id INTEGER,        -- the announcement message, edited live on join/leave/edit
     created_by_id INTEGER NOT NULL,
     created_timestamp TEXT NOT NULL,
     reminder_sent INTEGER NOT NULL DEFAULT 0
 );
 
+-- Attendees are a proper join table, not a JSON array column: two people
+-- reacting at nearly the same instant would race on a read-modify-write of
+-- a JSON blob (each reads the same array, appends their id, writes back —
+-- the second write silently drops the first). The UNIQUE (event_id, user_id)
+-- primary key makes concurrent joins/leaves atomic at the database level.
 CREATE TABLE IF NOT EXISTS event_attendees (
     event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     user_id INTEGER NOT NULL,
     joined_timestamp TEXT NOT NULL,
     PRIMARY KEY (event_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS event_channels (
+    guild_id INTEGER PRIMARY KEY,           -- one announcement channel per guild
+    channel_id INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS suggestions (

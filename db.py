@@ -49,6 +49,9 @@ def init_db() -> None:
                 event_date TEXT NOT NULL,
                 event_time TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
+                image_url TEXT,
+                announcement_channel_id INTEGER,
+                announcement_message_id INTEGER,
                 created_by_id INTEGER NOT NULL,
                 created_timestamp TEXT NOT NULL,
                 reminder_sent INTEGER NOT NULL DEFAULT 0
@@ -59,6 +62,11 @@ def init_db() -> None:
                 user_id INTEGER NOT NULL,
                 joined_timestamp TEXT NOT NULL,
                 PRIMARY KEY (event_id, user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS event_channels (
+                guild_id INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS suggestions (
@@ -109,7 +117,19 @@ def init_db() -> None:
             );
             """
         )
+        # Additive migration for databases created before these columns existed.
+        # CREATE TABLE IF NOT EXISTS above is a no-op on an existing table, so
+        # older deployments need ALTER TABLE to pick up new event columns.
+        _ensure_column(conn, "events", "image_url", "TEXT")
+        _ensure_column(conn, "events", "announcement_channel_id", "INTEGER")
+        _ensure_column(conn, "events", "announcement_message_id", "INTEGER")
     log.info("Database ready at %s", DB_PATH)
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl_type: str) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
 
 
 def _now_iso() -> str:
@@ -129,17 +149,43 @@ def create_event(
     event_time: str,
     description: str,
     created_by_id: int,
+    image_url: Optional[str] = None,
 ) -> int:
     with get_connection() as conn:
         cursor = conn.execute(
             """
             INSERT INTO events
-                (guild_id, channel_id, name, event_date, event_time, description, created_by_id, created_timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (guild_id, channel_id, name, event_date, event_time, description, image_url,
+                 created_by_id, created_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (guild_id, channel_id, name, event_date, event_time, description, created_by_id, _now_iso()),
+            (guild_id, channel_id, name, event_date, event_time, description, image_url, created_by_id, _now_iso()),
         )
         return cursor.lastrowid
+
+
+def set_event_announcement_message(event_id: int, channel_id: int, message_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE events SET announcement_channel_id = ?, announcement_message_id = ? WHERE id = ?",
+            (channel_id, message_id, event_id),
+        )
+
+
+def get_event_by_message_id(message_id: int) -> Optional[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM events WHERE announcement_message_id = ?", (message_id,)
+        ).fetchone()
+
+
+def update_event_description(event_id: int, guild_id: int, new_description: str) -> bool:
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE events SET description = ? WHERE id = ? AND guild_id = ?",
+            (new_description, event_id, guild_id),
+        )
+        return cursor.rowcount > 0
 
 
 def get_event(event_id: int, guild_id: int) -> Optional[sqlite3.Row]:
@@ -225,6 +271,30 @@ def get_events_needing_reminder() -> list[sqlite3.Row]:
 def mark_reminder_sent(event_id: int) -> None:
     with get_connection() as conn:
         conn.execute("UPDATE events SET reminder_sent = 1 WHERE id = ?", (event_id,))
+
+
+def set_event_channel(guild_id: int, channel_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO event_channels (guild_id, channel_id) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET channel_id = excluded.channel_id
+            """,
+            (guild_id, channel_id),
+        )
+
+
+def get_event_channel(guild_id: int) -> Optional[int]:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT channel_id FROM event_channels WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+    return row["channel_id"] if row else None
+
+
+def clear_event_channel(guild_id: int) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM event_channels WHERE guild_id = ?", (guild_id,))
 
 
 # ---------------------------------------------------------------------------

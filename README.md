@@ -13,7 +13,7 @@ announcements. Built with [discord.py](https://discordpy.readthedocs.io/).
 - **Moderation** — `!kick`, `!mute`, `!warn`, `!clear`, all admin-only with hierarchy checks.
 - **Announcements** — `!announce` posts a formatted embed.
 - **Points & leaderboard** — `!addpoint`, `!leaderboard`.
-- **Events** — `!event create/list/details/join/leave/delete`, with a 24h-before DM reminder for attendees.
+- **Events** — `!event create/list/details/edit/join/leave/delete` + `!event channel`, with a live-updating announcement embed (image, attendee count, ✅/❌ join/leave reactions) and a 24h-before DM reminder for attendees.
 - **Fun** — `!quote`, `!fact`, `!joke`, `!poll`, `!8ball`, `!dice`, `!compliment`.
 - **Suggestions & feedback** — `!suggest`, `!feedback`, `!mysuggest`, `!suggestion list/status/delete` (Admin).
 - **Social media announcements** — `!social`/`!embed` turns an Instagram/Facebook post link into an announcement embed, with a confirm/cancel step before posting. See [limitations](#social-media-embeds-limitations) below.
@@ -89,11 +89,13 @@ in their own cogs, loaded automatically on startup:
 
 | Command | Who | Description |
 |---|---|---|
-| `!event create "name" "date" "time" "description"` | Admin | Create an event. Date: `DD/MM/YYYY`, `today`/`tomorrow` (or Thai `วันนี้`/`พรุ่งนี้`), or `next <weekday>` (or Thai `<weekday>หน้า`). Time: 24h `HH:MM`. Always quote each argument. |
-| `!event list` | Everyone | Upcoming events in the next 30 days, soonest first. |
+| `!event channel set #channel` / `get` / `reset` | Admin | Configure where event announcements are posted. Required before `!event create` will work. |
+| `!event create "name" "date" "time" "description" ["image url"]` | Admin | Create an event and post its announcement embed. Date: `DD/MM/YYYY`, `today`/`tomorrow` (or Thai `วันนี้`/`พรุ่งนี้`), or `next <weekday>` (or Thai `<weekday>หน้า`). Time: 24h `HH:MM`. Always quote each argument. An image can be a URL argument or a file attached to the same message. |
+| `!event list` | Everyone | Next 10 upcoming events, soonest first. |
 | `!event details <id>` | Everyone | Full details: description, attendees, time remaining. |
-| `!event join <id>` / `!event leave <id>` | Everyone | Register / cancel registration. DMs a confirmation; the event creator gets a DM when someone joins. |
-| `!event delete <id>` | Admin | Delete an event. |
+| `!event edit <id> "new description"` | Admin | Update an event's description; live-edits the posted announcement embed. |
+| `!event join <id>` / `!event leave <id>`, or ✅/❌ on the announcement | Everyone | Register / cancel registration. Both the command and the reactions do the same thing, live-update the announcement's attendee count, and DM a confirmation. Un-reacting ✅ does **not** leave — only ❌ or `!event leave` do, so an accidental un-react can't silently drop someone. |
+| `!event delete <id>` | Admin | Delete an event and remove its announcement message from Discord. |
 | `!quote` / `!fact` / `!joke` | Everyone | Random Thai quote / fact / joke. |
 | `!poll "question" "opt1" "opt2" ["opt3"] ["opt4"]` | Everyone | Reaction poll (2-4 options), tallies after 60 seconds. |
 | `!8ball "question"` | Everyone | Magic 8-ball answer. |
@@ -196,10 +198,16 @@ suggestions, feedback, and the social media channel setting.
 
 Manual smoke test after changes (see also [CONTRIBUTING.md](CONTRIBUTING.md)):
 
-- [ ] `!event create "Test" "tomorrow" "10:00" "desc"` as admin → embed with correct date/countdown; as non-admin → permission error.
-- [ ] `!event create` with a bad date (`"foo"`) and bad time (`"99:99"`) → friendly Thai error, no crash.
-- [ ] `!event list` / `!event details <id>` show the created event; `!event join` / `!event leave` DM confirmations and update attendee count.
-- [ ] `!event delete <id>` as admin removes it; as non-admin is rejected.
+- [ ] `!event create "Test" "tomorrow" "10:00" "desc"` before `!event channel set` → "channel not set" error, no crash.
+- [ ] `!event channel set #channel` as admin works; as non-admin is rejected.
+- [ ] `!event create "Test" "tomorrow" "10:00" "desc"` as admin → posts an announcement embed with ✅/❌ reactions in the configured channel; as non-admin → permission error.
+- [ ] `!event create ... "desc" "https://.../image.jpg"` and separately `!event create ...` with an image attached to the same message → both show the image in the embed.
+- [ ] `!event create` with a bad date (`"foo"`), bad time (`"99:99"`), a past date, or a malformed image URL → friendly Thai error, no crash.
+- [ ] Clicking ✅ on the announcement joins (embed's attendee count updates live, DM confirmation sent); clicking ❌ leaves (count updates back down). Un-reacting ✅ does **not** change the count.
+- [ ] `!event join <id>` / `!event leave <id>` do the same thing as the reactions and also update the live embed.
+- [ ] `!event list` / `!event details <id>` show the created event; `!event edit <id> "new desc"` updates both the DB and the live announcement embed.
+- [ ] `!event delete <id>` as admin removes the DB row **and** the announcement message from Discord; as non-admin is rejected.
+- [ ] Two people clicking ✅ within the same second both end up correctly counted (no lost join from a race).
 - [ ] Restart the bot and confirm the event/suggestion/feedback data in `school_bot.db` is still there.
 - [ ] `!poll "q" "a" "b"` reacts with 1️⃣2️⃣, tallies votes after 60s.
 - [ ] `!suggest "text"` creates `#suggestions` if missing, posts with reactions, DMs the author.

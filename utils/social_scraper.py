@@ -17,10 +17,13 @@ previous one left empty:
    Review for content you don't own, so many admins won't have it approved
    — that's expected, not a bug. Skipped once strategy 1 already found data.
 3. **Open Graph meta tags** on the post's public page (the same og:image /
-   og:description technique Discord's own link unfurling uses). Instagram
-   and Facebook both increasingly serve a login wall or a stripped-down page
-   to non-browser requests, so this frequently returns partial data or
-   nothing at all — callers must handle that gracefully. Skipped once an
+   og:description technique Discord's own link unfurling uses). Confirmed
+   (2026-09-18, live request) that Instagram's post pages — including the
+   `/embed/` URL meant for public embedding — now render entirely
+   client-side and contain *zero* `og:*` tags or other static metadata in
+   the server response, regardless of the post's privacy setting; this
+   strategy is effectively dead for Instagram and only helps for Facebook,
+   which still serves partial tags for some public posts. Skipped once an
    earlier strategy already has both an image and a caption.
 
 Deliberately NOT implemented, and why:

@@ -527,8 +527,11 @@ HELP_CATEGORIES = {
         "title": "🎉 กิจกรรม",
         "commands": {
             "event": (
-                'สร้างและจัดการกิจกรรม — ใช้: !event create "ชื่อ" "วันที่" "เวลา" "รายละเอียด" (Admin) | '
-                "!event list | !event details <id> | !event join <id> | !event leave <id> | !event delete <id> (Admin)"
+                'สร้างและจัดการกิจกรรม — ใช้:\n'
+                '`!event create "ชื่อ" "วันที่" "เวลา" "รายละเอียด" ["URL รูปภาพ"]` (Admin, แนบไฟล์รูปภาพได้ด้วย)\n'
+                '`!event list` | `!event details <id>` | `!event edit <id> "รายละเอียดใหม่"` (Admin)\n'
+                "`!event join <id>` / `!event leave <id>` (หรือกด ✅/❌ บนประกาศ) | `!event delete <id>` (Admin)\n"
+                "`!event channel set #channel` / `get` / `reset` (Admin) — ตั้งค่าช่องประกาศกิจกรรม"
             ),
         },
     },
