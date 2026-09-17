@@ -63,8 +63,9 @@ CREATE TABLE IF NOT EXISTS social_posts (
     author_name TEXT,
     caption TEXT,
     image_url TEXT,
-    likes_count INTEGER,                    -- always NULL in practice; no legitimate source exposes this
+    likes_count INTEGER,                    -- real only when extraction_method is 'owned_*_api'; else NULL
     discord_message_id INTEGER,
     channel_id INTEGER,
-    posted_timestamp TEXT NOT NULL
+    posted_timestamp TEXT NOT NULL,
+    extraction_method TEXT                  -- 'owned_facebook_api' | 'owned_instagram_api' | 'meta_oembed' | 'open_graph'
 );

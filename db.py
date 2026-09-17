@@ -104,7 +104,8 @@ def init_db() -> None:
                 likes_count INTEGER,
                 discord_message_id INTEGER,
                 channel_id INTEGER,
-                posted_timestamp TEXT NOT NULL
+                posted_timestamp TEXT NOT NULL,
+                extraction_method TEXT
             );
             """
         )
@@ -374,14 +375,15 @@ def create_social_post(
     likes_count: Optional[int],
     discord_message_id: int,
     channel_id: int,
+    extraction_method: Optional[str] = None,
 ) -> int:
     with get_connection() as conn:
         cursor = conn.execute(
             """
             INSERT INTO social_posts
                 (guild_id, user_id, original_url, platform, author_name, caption, image_url,
-                 likes_count, discord_message_id, channel_id, posted_timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 likes_count, discord_message_id, channel_id, posted_timestamp, extraction_method)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 guild_id,
@@ -395,6 +397,7 @@ def create_social_post(
                 discord_message_id,
                 channel_id,
                 _now_iso(),
+                extraction_method,
             ),
         )
         return cursor.lastrowid

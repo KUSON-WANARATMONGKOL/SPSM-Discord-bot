@@ -213,6 +213,7 @@ class SocialMediaCog(commands.Cog, name="SocialMedia"):
                 likes_count=post.likes_count,
                 discord_message_id=posted_message.id,
                 channel_id=channel.id,
+                extraction_method=post.extraction_method,
             )
         except sqlite3.Error:
             log.exception("Failed to record social post in the database")

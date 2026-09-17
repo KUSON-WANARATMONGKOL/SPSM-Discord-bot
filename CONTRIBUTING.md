@@ -23,11 +23,13 @@
   tables; `db.py` is the source of truth and creates them automatically on
   startup.
 - `date_utils.py` — Thai/English date & time parsing for the event system.
-- `utils/social_scraper.py` — Instagram/Facebook metadata extraction
-  (Meta oEmbed + Open Graph fallback) for the social media feature. See the
-  module docstring before changing the data sources — it explains why
-  login-based scraping (e.g. `instagrapi`) is deliberately not used, and why
-  like counts are never populated.
+- `utils/social_scraper.py` — Instagram/Facebook metadata extraction: owned-
+  account Graph API → Meta oEmbed → Open Graph fallback, in that order, for
+  the social media feature. See the module docstring before changing the
+  data sources — it explains why login-based scraping (e.g. `instagrapi`),
+  Instagram's old `?__a=1` JSON endpoint, and headless-browser rendering are
+  all deliberately not used, and why like counts are only ever real for
+  posts from the school's own linked account (owned-account strategy).
 - `cogs/` — one file per feature area (`events_cog.py`, `fun_cog.py`,
   `feedback_cog.py`, `social_media_cog.py`), each with an `async def
   setup(bot)` that discord.py's `load_extension` calls.

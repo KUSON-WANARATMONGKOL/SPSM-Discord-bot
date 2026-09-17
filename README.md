@@ -112,33 +112,66 @@ in their own cogs, loaded automatically on startup:
 
 ## Social media embeds: limitations
 
-`!social`/`!embed` does **not** log into Instagram or Facebook, and does not
-use unofficial scraping libraries (e.g. `instagrapi`) that require real
-account credentials — that risks the account being banned and violates both
-platforms' Terms of Service around automated data collection, which isn't
-something to build into a bot that runs 24/7. Instead it uses two legitimate,
-best-effort sources (see [utils/social_scraper.py](utils/social_scraper.py)):
+`!social`/`!embed` does **not** log into Instagram or Facebook, does not use
+unofficial scraping libraries (e.g. `instagrapi`) or Instagram's old
+`?__a=1` JSON endpoint (Meta closed unauthenticated access to it years ago),
+and does not use a headless browser (Playwright/Selenium) to force its way
+past their anti-bot walls — all of that requires either real account
+credentials (account-ban risk, ToS violation) or heavy infra that Meta's
+datacenter-IP detection likely defeats anyway on a host like Railway. Instead
+it tries three legitimate sources in order, each filling in only what the
+previous one missed (see [utils/social_scraper.py](utils/social_scraper.py)):
 
-1. **Meta's oEmbed Read API**, if you set `META_APP_ID` + `META_APP_SECRET`
+1. **Owned-account Graph API** — if you've linked the school's own Facebook
+   Page + Instagram Business account (see setup below), this queries that
+   account directly with a real access token the school controls. This is
+   the only strategy that returns **real like counts**, and it only works
+   for posts *from that account*.
+2. **Meta's oEmbed Read API**, if you set `META_APP_ID` + `META_APP_SECRET`
    in `.env` (from a [Meta developer app](https://developers.facebook.com/apps)).
    Meta gates this behind **App Review** for posts you don't own, so unless
-   you complete that review, these calls will just fail silently.
-2. **Open Graph tags** on the post's public page (`og:image`, `og:description`,
+   you complete that review, these calls will just fail silently. Skipped if
+   strategy 1 already found the post.
+3. **Open Graph tags** on the post's public page (`og:image`, `og:description`,
    `og:title`) — the same technique Discord's own link previews use. Both
    Instagram and Facebook frequently serve a login wall or a stripped page to
    non-browser requests, so this can return partial data or fail outright,
-   especially for Instagram.
+   especially for Instagram. Skipped if an earlier strategy already found
+   both an image and a caption.
 
 Practical consequences:
 
-- **Like counts are never real.** Neither source exposes engagement numbers
-  for a post you don't administer, so the embed always shows "ไม่มีข้อมูล"
-  (no data) for likes rather than a fabricated number.
-- **Facebook tends to work better than Instagram** for the Open Graph
-  fallback, since Instagram's bot-detection is more aggressive.
+- **Like counts are only ever real for the school's own linked account**
+  (strategy 1). For any other post, the embed shows "ไม่มีข้อมูล" (no data)
+  for likes rather than a fabricated number.
+- **Facebook tends to work better than Instagram** for strategies 2-3, since
+  Instagram's bot-detection is more aggressive.
 - **Failures are expected, not bugs** — if `!social` replies "ไม่สามารถดึงข้อมูลโพสต์ได้"
-  (couldn't fetch post data), it usually means the platform blocked the
-  request or the post is private, not that something is broken.
+  (couldn't fetch post data), it usually means the post isn't from the linked
+  account and the platform blocked the fallback request (or the post is
+  private), not that something is broken.
+
+### Social media embeds: setting up the owned-account API
+
+Only worth doing if `!social` will mainly share the school's **own**
+Instagram/Facebook posts — it doesn't help with arbitrary third-party posts.
+One-time setup, done by whoever administers the school's Page/account:
+
+1. Make sure the Instagram account is a **Business or Creator account**
+   linked to a **Facebook Page** you administer (Instagram app → Settings →
+   Account type, then Settings → Linked accounts → Facebook).
+2. Create an app at the [Meta Developer Portal](https://developers.facebook.com/apps),
+   add the "Facebook Login" product (no App Review needed for your own
+   Page/account — review is only required for other people's content).
+3. Use the [Graph API Explorer](https://developers.facebook.com/tools/explorer/)
+   to generate a **User Access Token** with `pages_show_list`,
+   `pages_read_engagement`, and `instagram_basic` permissions, logging in as
+   the account that administers the Page.
+4. Exchange it for a **long-lived token**: `GET /oauth/access_token?grant_type=fb_exchange_token&client_id={app-id}&client_secret={app-secret}&fb_exchange_token={short-lived-token}`.
+5. Get the Page's access token from that long-lived user token: `GET /me/accounts` and copy the `access_token` for your Page — this is `META_PAGE_ACCESS_TOKEN`. Page tokens obtained this way don't expire as long as the user token behind them stays valid.
+6. Note the Page's `id` (`META_PAGE_ID`) from that same `/me/accounts` response.
+7. Get the linked Instagram Business Account ID: `GET /{page-id}?fields=instagram_business_account&access_token={page-access-token}` — that's `META_IG_USER_ID`.
+8. Put all three in `.env` and restart the bot.
 
 ## Notes on data storage
 
@@ -180,6 +213,7 @@ Manual smoke test after changes (see also [CONTRIBUTING.md](CONTRIBUTING.md)):
 - [ ] `!social <non-Instagram/Facebook URL>` → "URL ไม่ถูกต้อง" error.
 - [ ] Posting the same URL twice shows the "เคยถูกโพสต์ไปแล้ว" warning on the second attempt.
 - [ ] `!help` and `!help event` / `!help suggest` / `!help poll` / `!help social` show the new commands.
+- [ ] If you've set up the owned-account API (`META_PAGE_ID`/`META_IG_USER_ID`/`META_PAGE_ACCESS_TOKEN`): `!social <a post from that account>` shows a **real** like count in the preview, and the bot log shows `extraction_method=owned_facebook_api` / `owned_instagram_api`. A post from a *different* account should skip straight to oEmbed/Open Graph instead (no likes).
 
 ## Not implemented (available on request)
 
