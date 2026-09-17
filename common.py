@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import discord
+from discord.ext import commands
 
 PREFIX = "!"
 
@@ -66,3 +67,36 @@ def strip_quotes(text: str) -> str:
     if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
         return text[1:-1]
     return text
+
+
+def track_replies_for_cleanup(ctx: commands.Context) -> None:
+    """Wrap ctx.send so every reply it sends is tracked alongside ctx.message.
+
+    Pairs with schedule_reply_cleanup() in a cog's cog_after_invoke, to
+    auto-delete a command's invocation plus every message it sent back to the
+    *invoking* channel a few seconds later. Messages sent via channel.send()
+    to some other resolved channel object (an event/social announcement, for
+    example) are untouched — those are meant to persist. Call this from
+    cog_before_invoke, before the command body runs.
+    """
+    ctx._cleanup_messages = [ctx.message]
+    original_send = ctx.send
+
+    async def tracked_send(*args, **kwargs):
+        message = await original_send(*args, **kwargs)
+        ctx._cleanup_messages.append(message)
+        return message
+
+    ctx.send = tracked_send
+
+
+async def schedule_reply_cleanup(ctx: commands.Context, delay: float) -> None:
+    """Delete everything track_replies_for_cleanup() collected, after `delay` seconds.
+
+    Uses Message.delete(delay=...), which schedules a background task and
+    returns immediately rather than blocking here — safe to await directly
+    from cog_after_invoke. Missing-permission/already-deleted failures are
+    swallowed by discord.py itself in that code path.
+    """
+    for message in getattr(ctx, "_cleanup_messages", []):
+        await message.delete(delay=delay)

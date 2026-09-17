@@ -67,18 +67,16 @@ CREATE TABLE IF NOT EXISTS social_channels (
     channel_id INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS social_posts (
+-- Manually-composed announcements posted via !social's button + modal form
+-- (title, description, optional image). Not scraped from anywhere.
+CREATE TABLE IF NOT EXISTS social_announcements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
-    original_url TEXT NOT NULL,
-    platform TEXT NOT NULL,                 -- 'instagram' | 'facebook'
-    author_name TEXT,
-    caption TEXT,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
     image_url TEXT,
-    likes_count INTEGER,                    -- real only when extraction_method is 'owned_*_api'; else NULL
     discord_message_id INTEGER,
     channel_id INTEGER,
-    posted_timestamp TEXT NOT NULL,
-    extraction_method TEXT                  -- 'owned_facebook_api' | 'owned_instagram_api' | 'meta_oembed' | 'open_graph'
+    posted_timestamp TEXT NOT NULL
 );

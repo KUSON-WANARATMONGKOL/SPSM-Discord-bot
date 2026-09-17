@@ -1,108 +1,181 @@
-"""Social media -> Discord embed announcements.
+"""Social media announcements: !social_channel set/get/reset, !social/!embed.
 
-!social_channel set/get/reset (Admin) configures where converted posts go.
-!social <url> (alias: !embed) fetches best-effort metadata for a public
-Instagram/Facebook post and, after the author confirms a preview, posts it
-as an embed to that channel.
-
-See utils/social_scraper.py for the data-source limitations (no like counts,
-Instagram frequently blocks extraction entirely) — this cog just renders
-whatever comes back and degrades gracefully when it's incomplete.
+!social no longer takes a URL or scrapes Instagram/Facebook — that approach
+was dropped after confirming Instagram serves zero usable metadata to any
+non-browser request (see git history / prior conversation for the evidence).
+Instead it's a manual composer: the command posts a button, clicking it opens
+a Discord modal (title + description text fields), and submitting it posts
+the resulting embed to the configured channel. The image comes from an
+attachment on the !social message itself, or an optional "image URL" field
+in the modal if no attachment was given — Discord modals can't have a file
+upload field, so one of those two is the only way to attach a picture.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
-from datetime import datetime, timezone
 from typing import Optional
 
-import aiohttp
 import discord
 from discord.ext import commands
 
 import db
-from common import COLOR_DANGER, COLOR_INFO, COLOR_SUCCESS, log_action, make_embed
-from utils.social_scraper import ScrapingError, SocialPost, classify_url, extract_post
+from common import (
+    COLOR_INFO,
+    log_action,
+    make_embed,
+    schedule_reply_cleanup,
+    track_replies_for_cleanup,
+)
 
 log = logging.getLogger("school_bot.social")
 
-PLATFORM_META = {
-    "instagram": {"label": "📷 Instagram", "color": discord.Color.from_rgb(255, 102, 178)},
-    "facebook": {"label": "👍 Facebook", "color": discord.Color.from_rgb(24, 119, 242)},
-}
+TITLE_MAX_LEN = 100
+DESCRIPTION_MAX_LEN = 2000
+BUTTON_TIMEOUT_SECONDS = 120
+OVERALL_WAIT_CEILING_SECONDS = 300  # safety net if the user opens the modal and abandons it
+CLEANUP_DELAY_SECONDS = 8
 
-CONFIRM_TIMEOUT_SECONDS = 90
 
-
-def build_social_embed(post: SocialPost) -> discord.Embed:
-    meta = PLATFORM_META.get(post.platform, {"label": post.platform, "color": discord.Color.blurple()})
-    author_display = post.author_name or "ไม่ทราบผู้เขียน"
-
-    embed = discord.Embed(
-        title=f"{meta['label']} Post",
-        description=f"โพสต์โดย **{author_display}**",
-        color=meta["color"],
-        timestamp=post.post_date or datetime.now(timezone.utc),
-    )
-    if post.author_avatar:
-        embed.set_thumbnail(url=post.author_avatar)
-    if post.image_url:
-        embed.set_image(url=post.image_url)
-
-    caption = (post.caption or "ไม่มีคำบรรยาย")[:1024]
-    embed.add_field(name="📝 คำบรรยาย", value=caption, inline=False)
-
-    if post.hashtags:
-        embed.add_field(name="🏷️ แฮชแท็ก", value=" ".join(post.hashtags)[:1024], inline=False)
-
-    likes_display = f"{post.likes_count:,}" if post.likes_count is not None else "ไม่มีข้อมูล"
-    embed.add_field(name="❤️ ยอดไลก์", value=likes_display, inline=True)
-    embed.add_field(name="🔗 โพสต์ต้นฉบับ", value=f"[ดูโพสต์เดิม]({post.original_url})", inline=True)
-
-    if post.author_avatar:
-        embed.set_footer(text=f"{meta['label']} | {author_display}", icon_url=post.author_avatar)
+def build_social_announcement_embed(
+    title: str, description: str, image_url: Optional[str], author: discord.abc.User
+) -> discord.Embed:
+    embed = make_embed(title=f"📢 {title}", description=description, color=COLOR_INFO)
+    if image_url:
+        embed.set_image(url=image_url)
+    avatar_url = author.display_avatar.url if getattr(author, "display_avatar", None) else None
+    if avatar_url:
+        embed.set_footer(text=f"ประกาศโดย {author.display_name}", icon_url=avatar_url)
     else:
-        embed.set_footer(text=f"{meta['label']} | {author_display}")
+        embed.set_footer(text=f"ประกาศโดย {author.display_name}")
     return embed
 
 
-class SocialConfirmView(discord.ui.View):
-    def __init__(self, author_id: int) -> None:
-        super().__init__(timeout=CONFIRM_TIMEOUT_SECONDS)
+class SocialAnnouncementModal(discord.ui.Modal):
+    def __init__(self, channel: discord.TextChannel, attached_image_url: Optional[str], done: asyncio.Event) -> None:
+        super().__init__(title="สร้างประกาศโซเชียลมีเดีย")
+        self.channel = channel
+        self.attached_image_url = attached_image_url
+        self.done = done
+
+        self.title_input = discord.ui.TextInput(
+            label="หัวข้อประกาศ",
+            style=discord.TextStyle.short,
+            max_length=TITLE_MAX_LEN,
+            required=True,
+            placeholder="เช่น กิจกรรมวันกีฬาสี",
+        )
+        self.add_item(self.title_input)
+
+        self.description_input = discord.ui.TextInput(
+            label="รายละเอียด",
+            style=discord.TextStyle.paragraph,
+            max_length=DESCRIPTION_MAX_LEN,
+            required=True,
+            placeholder="พิมพ์เนื้อหาประกาศที่นี่...",
+        )
+        self.add_item(self.description_input)
+
+        self.image_url_input: Optional[discord.ui.TextInput] = None
+        if not attached_image_url:
+            self.image_url_input = discord.ui.TextInput(
+                label="ลิงก์รูปภาพ (ถ้ามี)",
+                style=discord.TextStyle.short,
+                required=False,
+                placeholder="https://...",
+            )
+            self.add_item(self.image_url_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            title = self.title_input.value.strip()
+            description = self.description_input.value.strip()
+
+            image_url = self.attached_image_url
+            if not image_url and self.image_url_input is not None:
+                candidate = self.image_url_input.value.strip()
+                if candidate:
+                    if not candidate.startswith(("http://", "https://")):
+                        await interaction.response.send_message(
+                            "❌ ลิงก์รูปภาพไม่ถูกต้อง โปรดใช้ URL ที่ขึ้นต้นด้วย http:// หรือ https://",
+                            ephemeral=True,
+                        )
+                        return
+                    image_url = candidate
+
+            embed = build_social_announcement_embed(title, description, image_url, interaction.user)
+
+            try:
+                message = await self.channel.send(embed=embed)
+            except discord.Forbidden:
+                await interaction.response.send_message("❌ บอทไม่มีสิทธิ์โพสต์ในช่องที่ตั้งค่าไว้", ephemeral=True)
+                return
+
+            try:
+                db.create_social_announcement(
+                    guild_id=interaction.guild_id,
+                    user_id=interaction.user.id,
+                    title=title,
+                    description=description,
+                    image_url=image_url,
+                    discord_message_id=message.id,
+                    channel_id=self.channel.id,
+                )
+            except sqlite3.Error:
+                log.exception("Failed to record social announcement")
+
+            await interaction.response.send_message(f"✅ โพสต์ประกาศไปยัง {self.channel.mention} แล้ว", ephemeral=True)
+            log_action(interaction.guild, f"{interaction.user} posted a social announcement to #{self.channel.name}: {title}")
+        finally:
+            self.done.set()
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        log.exception("Error in social announcement modal: %s", error)
+        try:
+            await interaction.response.send_message("❌ เกิดข้อผิดพลาด โปรดลองใหม่อีกครั้ง", ephemeral=True)
+        except discord.InteractionResponded:
+            pass
+        self.done.set()
+
+
+class SocialAnnouncementStartView(discord.ui.View):
+    def __init__(self, author_id: int, channel: discord.TextChannel, image_url: Optional[str]) -> None:
+        super().__init__(timeout=BUTTON_TIMEOUT_SECONDS)
         self.author_id = author_id
-        self.value: Optional[bool] = None
+        self.channel = channel
+        self.image_url = image_url
+        self.done = asyncio.Event()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message("❌ เฉพาะผู้ใช้คำสั่งเท่านั้นที่กดยืนยันได้", ephemeral=True)
+            await interaction.response.send_message("❌ เฉพาะผู้ใช้คำสั่งเท่านั้นที่กรอกแบบฟอร์มนี้ได้", ephemeral=True)
             return False
         return True
 
-    @discord.ui.button(label="โพสต์", style=discord.ButtonStyle.success, emoji="✅")
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self.value = True
-        await interaction.response.defer()
-        self.stop()
+    async def on_timeout(self) -> None:
+        self.done.set()
 
-    @discord.ui.button(label="ยกเลิก", style=discord.ButtonStyle.danger, emoji="❌")
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self.value = False
-        await interaction.response.defer()
+    @discord.ui.button(label="กรอกรายละเอียดประกาศ", style=discord.ButtonStyle.primary, emoji="📝")
+    async def open_form(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(SocialAnnouncementModal(self.channel, self.image_url, self.done))
         self.stop()
+        try:
+            await interaction.message.edit(view=None)
+        except (discord.NotFound, discord.Forbidden):
+            pass
 
 
 class SocialMediaCog(commands.Cog, name="SocialMedia"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.session: Optional[aiohttp.ClientSession] = None
 
-    async def cog_load(self) -> None:
-        self.session = aiohttp.ClientSession()
+    async def cog_before_invoke(self, ctx: commands.Context) -> None:
+        track_replies_for_cleanup(ctx)
 
-    async def cog_unload(self) -> None:
-        if self.session is not None:
-            await self.session.close()
+    async def cog_after_invoke(self, ctx: commands.Context) -> None:
+        await schedule_reply_cleanup(ctx, CLEANUP_DELAY_SECONDS)
 
     # ------------------------------------------------------------------
     # !social_channel ...
@@ -116,7 +189,7 @@ class SocialMediaCog(commands.Cog, name="SocialMedia"):
     @social_channel_group.command(name="set")
     @commands.has_permissions(administrator=True)
     async def social_channel_set(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
-        """Set the channel where !social posts are published (Admin only)."""
+        """Set the channel where !social posts announcements (Admin only)."""
         db.set_social_channel(ctx.guild.id, channel.id)
         await ctx.send(f"✅ ตั้งค่าช่องโซเชียลมีเดียเป็น {channel.mention} แล้ว")
         log_action(ctx.guild, f"{ctx.author} set social media channel to #{channel.name}")
@@ -149,13 +222,8 @@ class SocialMediaCog(commands.Cog, name="SocialMedia"):
 
     @commands.command(name="social", aliases=["embed"])
     @commands.cooldown(1, 30, commands.BucketType.user)
-    async def social_cmd(self, ctx: commands.Context, url: str) -> None:
-        """Convert an Instagram/Facebook post link into an announcement embed."""
-        platform = classify_url(url)
-        if platform is None:
-            await ctx.send("❌ URL ไม่ถูกต้อง รองรับเฉพาะลิงก์โพสต์ Instagram หรือ Facebook เท่านั้น")
-            return
-
+    async def social_cmd(self, ctx: commands.Context) -> None:
+        """Open a form to compose and post a social-media-style announcement."""
         channel_id = db.get_social_channel(ctx.guild.id)
         if channel_id is None:
             await ctx.send("❌ ยังไม่ได้ตั้งค่าช่องประกาศ\nใช้: `!social_channel set #channel_name`")
@@ -165,70 +233,24 @@ class SocialMediaCog(commands.Cog, name="SocialMedia"):
             await ctx.send("❌ ไม่พบช่องที่ตั้งค่าไว้ โปรดตั้งค่าใหม่ด้วย `!social_channel set #channel_name`")
             return
 
-        previous = db.find_social_post_by_url(ctx.guild.id, url)
+        image_url = None
+        if ctx.message.attachments:
+            first = ctx.message.attachments[0]
+            if (first.content_type or "").startswith("image/"):
+                image_url = first.url
 
-        async with ctx.typing():
-            try:
-                post = await extract_post(self.session, url, platform)
-            except ScrapingError:
-                if platform == "instagram":
-                    await ctx.send(
-                        "❌ ไม่สามารถดึงข้อมูลโพสต์ Instagram นี้ได้\n"
-                        "Instagram ไม่แสดงข้อมูลโพสต์ให้ระบบภายนอกโดยตรงอีกต่อไป "
-                        "(ไม่เกี่ยวกับว่าโพสต์เป็นสาธารณะหรือไม่)\n"
-                        "หากเป็นโพสต์จากบัญชีทางการของโรงเรียน ให้แอดมินตั้งค่า `META_IG_USER_ID` "
-                        "ตามคู่มือใน README เพื่อให้ดึงข้อมูลได้แม่นยำ"
-                    )
-                else:
-                    await ctx.send("❌ ไม่สามารถดึงข้อมูลโพสต์ได้ โปรดตรวจสอบว่า URL ถูกต้องและโพสต์เป็นสาธารณะ")
-                return
-            except Exception:
-                log.exception("Unexpected error extracting social post from %s", url)
-                await ctx.send("❌ เกิดข้อผิดพลาดในระบบ โปรดลองใหม่อีกครั้ง")
-                return
-
-        embed = build_social_embed(post)
-        view = SocialConfirmView(author_id=ctx.author.id)
-        preview_note = "ตรวจสอบตัวอย่างด้านล่าง แล้วกดยืนยันเพื่อโพสต์"
-        if previous is not None:
-            preview_note = f"⚠️ ลิงก์นี้เคยถูกโพสต์ไปแล้ว (#{previous['id']})\n{preview_note}"
-
-        preview_message = await ctx.send(content=preview_note, embed=embed, view=view)
-
-        await view.wait()
-
-        if view.value is None:
-            await preview_message.edit(content="⏳ หมดเวลา ไม่ได้โพสต์", embed=embed, view=None)
-            return
-        if not view.value:
-            await preview_message.edit(content="❌ ยกเลิกแล้ว", embed=embed, view=None)
-            return
+        view = SocialAnnouncementStartView(ctx.author.id, channel, image_url)
+        note = (
+            "แนบรูปภาพแล้ว ✅ กดปุ่มด้านล่างเพื่อกรอกหัวข้อและรายละเอียด"
+            if image_url
+            else "กดปุ่มด้านล่างเพื่อกรอกหัวข้อ รายละเอียด และลิงก์รูปภาพ (ถ้ามี)"
+        )
+        await ctx.send(note, view=view)
 
         try:
-            posted_message = await channel.send(embed=embed)
-        except discord.Forbidden:
-            await preview_message.edit(content="❌ บอทไม่มีสิทธิ์โพสต์ในช่องนั้น", embed=embed, view=None)
-            return
-
-        try:
-            db.create_social_post(
-                guild_id=ctx.guild.id,
-                user_id=ctx.author.id,
-                original_url=url,
-                platform=platform,
-                author_name=post.author_name,
-                caption=post.caption,
-                image_url=post.image_url,
-                likes_count=post.likes_count,
-                discord_message_id=posted_message.id,
-                channel_id=channel.id,
-                extraction_method=post.extraction_method,
-            )
-        except sqlite3.Error:
-            log.exception("Failed to record social post in the database")
-
-        await preview_message.edit(content=f"✅ โพสต์ไปยัง {channel.mention} แล้ว", embed=embed, view=None)
-        log_action(ctx.guild, f"{ctx.author} posted a {platform} link to #{channel.name}: {url}")
+            await asyncio.wait_for(view.done.wait(), timeout=OVERALL_WAIT_CEILING_SECONDS)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def setup(bot: commands.Bot) -> None:

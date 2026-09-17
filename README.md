@@ -3,8 +3,8 @@
 A Discord bot for school community management (Prasanmitr Demonstration
 School): welcome messages, reaction-based role assignment, moderation tools,
 announcements, a points/leaderboard system, an event system, fun/engagement
-commands, a suggestion/feedback system, and Instagram/Facebook post
-announcements. Built with [discord.py](https://discordpy.readthedocs.io/).
+commands, a suggestion/feedback system, and a form-based social media
+announcement composer. Built with [discord.py](https://discordpy.readthedocs.io/).
 
 ## Features
 
@@ -16,8 +16,9 @@ announcements. Built with [discord.py](https://discordpy.readthedocs.io/).
 - **Events** — `!event create/list/details/edit/join/leave/delete` + `!event channel`, with a live-updating announcement embed (image, attendee count, ✅/❌ join/leave reactions) and a 24h-before DM reminder for attendees.
 - **Fun** — `!quote`, `!fact`, `!joke`, `!poll`, `!8ball`, `!dice`, `!compliment`.
 - **Suggestions & feedback** — `!suggest`, `!feedback`, `!mysuggest`, `!suggestion list/status/delete` (Admin).
-- **Social media announcements** — `!social`/`!embed` turns an Instagram/Facebook post link into an announcement embed, with a confirm/cancel step before posting. See [limitations](#social-media-embeds-limitations) below.
+- **Social media announcements** — `!social`/`!embed` opens a form (button → Discord modal) to compose a title + description, attach an image, and post the result to the configured channel.
 - **Utility** — `!hello`, `!ping`, `!server`, `!rules`, `!schedule`, `!help`.
+- **Self-cleaning `!event`/`!social` commands** — a few seconds after either finishes, the user's command message and every reply the bot sent back to that channel are auto-deleted, keeping the channel tidy. The actual event/social announcement embed (posted to the configured channel) is never touched by this.
 
 Run `!help` in your server for the full, categorized command list, or
 `!help <command>` (e.g. `!help event`) for usage details on one command.
@@ -31,11 +32,10 @@ in their own cogs, loaded automatically on startup:
 - [common.py](common.py) — shared embed/color/logging helpers used by `bot.py` and every cog.
 - [db.py](db.py) — SQLite persistence layer (see [schema.sql](schema.sql) for the table layout).
 - [date_utils.py](date_utils.py) — Thai/English date & time parsing for the event system.
-- [utils/social_scraper.py](utils/social_scraper.py) — Instagram/Facebook metadata extraction (oEmbed + Open Graph fallback) for the social media feature.
 - [cogs/events_cog.py](cogs/events_cog.py) — `!event ...` and the 24h reminder task.
 - [cogs/fun_cog.py](cogs/fun_cog.py) — `!quote`, `!fact`, `!joke`, `!poll`, `!8ball`, `!dice`, `!compliment`.
 - [cogs/feedback_cog.py](cogs/feedback_cog.py) — `!suggest`, `!feedback`, `!mysuggest`, `!suggestion ...`.
-- [cogs/social_media_cog.py](cogs/social_media_cog.py) — `!social_channel ...`, `!social`/`!embed`.
+- [cogs/social_media_cog.py](cogs/social_media_cog.py) — `!social_channel ...`, `!social`/`!embed` (button + modal announcement composer).
 
 ## Setup
 
@@ -64,9 +64,7 @@ in their own cogs, loaded automatically on startup:
    WELCOME_CHANNEL=welcome
    ```
 
-   `.env` is git-ignored — never commit your real token. `META_APP_ID` /
-   `META_APP_SECRET` are optional (see
-   [Social media embeds: limitations](#social-media-embeds-limitations)).
+   `.env` is git-ignored — never commit your real token.
 
 4. **Invite the bot to your server**
 
@@ -108,76 +106,38 @@ in their own cogs, loaded automatically on startup:
 | `!suggestion list [status]` | Admin | List all suggestions, optionally filtered (`pending`/`approved`/`rejected`/`considering`). |
 | `!suggestion status <id> <status>` | Admin | Update a suggestion's status; DMs the author and updates the posted embed/reaction. |
 | `!suggestion delete <id>` | Admin | Delete a suggestion and its posted message. |
-| `!social_channel set #channel` | Admin | Set the channel `!social` posts converted embeds to. |
+| `!social_channel set #channel` | Admin | Set the channel `!social` posts announcements to. |
 | `!social_channel get` / `!social_channel reset` | Admin | View / clear the configured channel. |
-| `!social <url>` (alias `!embed <url>`) | Everyone | Fetch metadata for an Instagram/Facebook post link, preview it as an embed, and post to the configured channel after you click ✅. 30s cooldown. See limitations below. |
+| `!social` (alias `!embed`) — optionally attach an image to this message | Everyone | Posts a button; clicking it opens a Discord form (title + description, and an image URL field if you didn't attach one) and submits directly to the configured channel. 30s cooldown. |
 
-## Social media embeds: limitations
+## Social media announcements: how it works
 
-`!social`/`!embed` does **not** log into Instagram or Facebook, does not use
-unofficial scraping libraries (e.g. `instagrapi`) or Instagram's old
-`?__a=1` JSON endpoint (Meta closed unauthenticated access to it years ago),
-and does not use a headless browser (Playwright/Selenium) to force its way
-past their anti-bot walls — all of that requires either real account
-credentials (account-ban risk, ToS violation) or heavy infra that Meta's
-datacenter-IP detection likely defeats anyway on a host like Railway. Instead
-it tries three legitimate sources in order, each filling in only what the
-previous one missed (see [utils/social_scraper.py](utils/social_scraper.py)):
+`!social` does **not** take a URL and does **not** fetch anything from
+Instagram/Facebook — an earlier version tried scraping post metadata, but
+testing confirmed Instagram serves zero usable data to any non-browser
+request (not even its own public embed endpoint), and there's no reliable,
+ToS-clean way around that short of logging into a real account (ban risk) or
+running a headless browser that datacenter IPs like Railway's get blocked
+from anyway. Rather than ship something unreliable, `!social` is a manual
+composer instead:
 
-1. **Owned-account Graph API** — if you've linked the school's own Facebook
-   Page + Instagram Business account (see setup below), this queries that
-   account directly with a real access token the school controls. This is
-   the only strategy that returns **real like counts**, and it only works
-   for posts *from that account*.
-2. **Meta's oEmbed Read API**, if you set `META_APP_ID` + `META_APP_SECRET`
-   in `.env` (from a [Meta developer app](https://developers.facebook.com/apps)).
-   Meta gates this behind **App Review** for posts you don't own, so unless
-   you complete that review, these calls will just fail silently. Skipped if
-   strategy 1 already found the post.
-3. **Open Graph tags** on the post's public page (`og:image`, `og:description`,
-   `og:title`) — the same technique Discord's own link previews use. Both
-   Instagram and Facebook frequently serve a login wall or a stripped page to
-   non-browser requests, so this can return partial data or fail outright,
-   especially for Instagram. Skipped if an earlier strategy already found
-   both an image and a caption.
+1. Type `!social`, optionally with an image attached to that same message.
+2. The bot replies with a **📝 กรอกรายละเอียดประกาศ** button (only you can click it).
+3. Clicking it opens a Discord **modal** (popup form) with a Title field, a
+   Description field, and — only if you didn't attach an image in step 1 —
+   an optional Image URL field. (Discord modals can only contain text
+   fields; there's no way to upload a file through one, which is why the
+   attachment has to happen on the original message instead.)
+4. Submitting the form immediately posts the resulting embed to the
+   configured channel and confirms to you privately (ephemeral reply).
 
-Practical consequences:
-
-- **Like counts are only ever real for the school's own linked account**
-  (strategy 1). For any other post, the embed shows "ไม่มีข้อมูล" (no data)
-  for likes rather than a fabricated number.
-- **Facebook tends to work better than Instagram** for strategies 2-3, since
-  Instagram's bot-detection is more aggressive.
-- **Failures are expected, not bugs** — if `!social` replies "ไม่สามารถดึงข้อมูลโพสต์ได้"
-  (couldn't fetch post data), it usually means the post isn't from the linked
-  account and the platform blocked the fallback request (or the post is
-  private), not that something is broken.
-
-### Social media embeds: setting up the owned-account API
-
-Only worth doing if `!social` will mainly share the school's **own**
-Instagram/Facebook posts — it doesn't help with arbitrary third-party posts.
-One-time setup, done by whoever administers the school's Page/account:
-
-1. Make sure the Instagram account is a **Business or Creator account**
-   linked to a **Facebook Page** you administer (Instagram app → Settings →
-   Account type, then Settings → Linked accounts → Facebook).
-2. Create an app at the [Meta Developer Portal](https://developers.facebook.com/apps),
-   add the "Facebook Login" product (no App Review needed for your own
-   Page/account — review is only required for other people's content).
-3. Use the [Graph API Explorer](https://developers.facebook.com/tools/explorer/)
-   to generate a **User Access Token** with `pages_show_list`,
-   `pages_read_engagement`, and `instagram_basic` permissions, logging in as
-   the account that administers the Page.
-4. Exchange it for a **long-lived token**: `GET /oauth/access_token?grant_type=fb_exchange_token&client_id={app-id}&client_secret={app-secret}&fb_exchange_token={short-lived-token}`.
-5. Get the Page's access token from that long-lived user token: `GET /me/accounts` and copy the `access_token` for your Page — this is `META_PAGE_ACCESS_TOKEN`. Page tokens obtained this way don't expire as long as the user token behind them stays valid.
-6. Note the Page's `id` (`META_PAGE_ID`) from that same `/me/accounts` response.
-7. Get the linked Instagram Business Account ID: `GET /{page-id}?fields=instagram_business_account&access_token={page-access-token}` — that's `META_IG_USER_ID`.
-8. Put all three in `.env` and restart the bot.
+The button times out after 2 minutes if unclicked; if you click it but then
+close the form without submitting, the command gives up after 5 minutes so
+it doesn't hang forever.
 
 ## Notes on data storage
 
-- **Persistent (SQLite, `school_bot.db`)**: events, event attendees, suggestions, feedback, the social media channel setting, and a log of posted social media links — see [db.py](db.py) / [schema.sql](schema.sql). The file is created automatically on first run and is git-ignored.
+- **Persistent (SQLite, `school_bot.db`)**: events, event attendees, suggestions, feedback, the social media channel setting, and a log of posted social media announcements — see [db.py](db.py) / [schema.sql](schema.sql). The file is created automatically on first run and is git-ignored.
 - **In-memory (resets on restart)**: points (`!addpoint`/`!leaderboard`) and warning history (`!warn`), stored in `bot.py`'s `leaderboard`/`warnings_log` dicts. This is intentional for now — swap them for SQLite tables (following the same pattern as `db.py`) if you need them to survive restarts too.
 
 ## Deployment
@@ -214,22 +174,15 @@ Manual smoke test after changes (see also [CONTRIBUTING.md](CONTRIBUTING.md)):
 - [ ] `!suggest edit <id> "new"` within 5 minutes works; after 5 minutes is rejected.
 - [ ] `!suggestion status <id> approved` as admin DMs the author and updates the embed/reaction.
 - [ ] Spamming `!suggest`/`!feedback` twice within 30s triggers the cooldown message, not a crash.
-- [ ] `!social <url>` before `!social_channel set` → friendly "channel not set" error, no crash.
+- [ ] `!social` before `!social_channel set` → friendly "channel not set" error, no crash.
 - [ ] `!social_channel set #channel` as admin works; as non-admin is rejected.
-- [ ] `!social <a real public Facebook post URL>` → preview embed with ✅/❌ buttons; ✅ posts to the configured channel, ❌ cancels, and letting it sit for 90s without clicking shows "หมดเวลา".
-- [ ] `!social <a private or malformed URL>` → "ไม่สามารถดึงข้อมูลโพสต์ได้" error, no crash (Instagram failing here is expected — see limitations above).
-- [ ] `!social <non-Instagram/Facebook URL>` → "URL ไม่ถูกต้อง" error.
-- [ ] Posting the same URL twice shows the "เคยถูกโพสต์ไปแล้ว" warning on the second attempt.
+- [ ] `!social` with no attachment → button appears → clicking it opens a modal with 3 fields (title, description, image URL); submitting with a valid `https://...` image URL posts the embed with that image to the configured channel.
+- [ ] `!social` with an image attached to that message → button → modal has only 2 fields (title, description, no image URL field); submitting posts the embed with the attached image.
+- [ ] Submitting the modal's image URL field with something that doesn't start with `http://`/`https://` → ephemeral Thai error, no crash.
+- [ ] Someone other than the command's author clicking the button gets an ephemeral "only the command user can" message and nothing opens for them.
+- [ ] Leaving the button unclicked for 2 minutes, and separately opening the modal and closing it without submitting, both eventually let the command finish (no permanent hang).
 - [ ] `!help` and `!help event` / `!help suggest` / `!help poll` / `!help social` show the new commands.
-- [ ] If you've set up the owned-account API (`META_PAGE_ID`/`META_IG_USER_ID`/`META_PAGE_ACCESS_TOKEN`): `!social <a post from that account>` shows a **real** like count in the preview, and the bot log shows `extraction_method=owned_facebook_api` / `owned_instagram_api`. A post from a *different* account should skip straight to oEmbed/Open Graph instead (no likes).
-
-## Not implemented (available on request)
-
-The original feature spec also described: auto-refreshing like counts on a
-daily timer, `!social <url> --schedule "HH:MM"` scheduled posting, posting to
-multiple channels in one command, and a `--message` flag for a custom caption
-above the embed. These were left out of this pass to keep the social media
-feature's first version focused — ask if you want any of them added.
+- [ ] For both `!event` and `!social` commands: a few seconds after the command finishes, the user's typed command and the bot's reply/prompt message in that channel disappear on their own — but the actual event/social announcement embed (posted to the configured channel) stays.
 
 ## Contributing
 

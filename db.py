@@ -100,20 +100,16 @@ def init_db() -> None:
                 channel_id INTEGER NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS social_posts (
+            CREATE TABLE IF NOT EXISTS social_announcements (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
-                original_url TEXT NOT NULL,
-                platform TEXT NOT NULL,
-                author_name TEXT,
-                caption TEXT,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
                 image_url TEXT,
-                likes_count INTEGER,
                 discord_message_id INTEGER,
                 channel_id INTEGER,
-                posted_timestamp TEXT NOT NULL,
-                extraction_method TEXT
+                posted_timestamp TEXT NOT NULL
             );
             """
         )
@@ -434,48 +430,22 @@ def clear_social_channel(guild_id: int) -> None:
         conn.execute("DELETE FROM social_channels WHERE guild_id = ?", (guild_id,))
 
 
-def create_social_post(
+def create_social_announcement(
     guild_id: int,
     user_id: int,
-    original_url: str,
-    platform: str,
-    author_name: Optional[str],
-    caption: Optional[str],
+    title: str,
+    description: str,
     image_url: Optional[str],
-    likes_count: Optional[int],
     discord_message_id: int,
     channel_id: int,
-    extraction_method: Optional[str] = None,
 ) -> int:
     with get_connection() as conn:
         cursor = conn.execute(
             """
-            INSERT INTO social_posts
-                (guild_id, user_id, original_url, platform, author_name, caption, image_url,
-                 likes_count, discord_message_id, channel_id, posted_timestamp, extraction_method)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO social_announcements
+                (guild_id, user_id, title, description, image_url, discord_message_id, channel_id, posted_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                guild_id,
-                user_id,
-                original_url,
-                platform,
-                author_name,
-                caption,
-                image_url,
-                likes_count,
-                discord_message_id,
-                channel_id,
-                _now_iso(),
-                extraction_method,
-            ),
+            (guild_id, user_id, title, description, image_url, discord_message_id, channel_id, _now_iso()),
         )
         return cursor.lastrowid
-
-
-def find_social_post_by_url(guild_id: int, url: str) -> Optional[sqlite3.Row]:
-    with get_connection() as conn:
-        return conn.execute(
-            "SELECT * FROM social_posts WHERE guild_id = ? AND original_url = ? ORDER BY id DESC LIMIT 1",
-            (guild_id, url),
-        ).fetchone()

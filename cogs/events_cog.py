@@ -24,7 +24,17 @@ import discord
 from discord.ext import commands, tasks
 
 import db
-from common import COLOR_DANGER, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING, log_action, make_embed, strip_quotes
+from common import (
+    COLOR_DANGER,
+    COLOR_INFO,
+    COLOR_SUCCESS,
+    COLOR_WARNING,
+    log_action,
+    make_embed,
+    schedule_reply_cleanup,
+    strip_quotes,
+    track_replies_for_cleanup,
+)
 from date_utils import combine, format_remaining, now_bangkok, parse_event_date, parse_event_time
 
 log = logging.getLogger("school_bot.events")
@@ -34,6 +44,7 @@ DESCRIPTION_MAX_LEN = 1000
 EVENT_LIST_LIMIT = 10
 JOIN_EMOJI = "✅"
 LEAVE_EMOJI = "❌"
+CLEANUP_DELAY_SECONDS = 8
 
 
 def _event_datetime(row: sqlite3.Row) -> datetime:
@@ -75,6 +86,16 @@ class EventsCog(commands.Cog, name="Events"):
 
     def cog_unload(self) -> None:
         self.reminder_check.cancel()
+
+    async def cog_before_invoke(self, ctx: commands.Context) -> None:
+        track_replies_for_cleanup(ctx)
+
+    async def cog_after_invoke(self, ctx: commands.Context) -> None:
+        # Keeps the channel tidy: the !event command and every reply it sent
+        # here vanish shortly after. The announcement embed itself is posted
+        # via channel.send() to the configured event channel, not ctx.send(),
+        # so it's never part of this cleanup regardless of which channel that is.
+        await schedule_reply_cleanup(ctx, CLEANUP_DELAY_SECONDS)
 
     # ------------------------------------------------------------------
     # Shared helpers (used by both text commands and reactions)

@@ -578,10 +578,10 @@ HELP_CATEGORIES = {
                 "!social_channel get | !social_channel reset"
             ),
             "social": (
-                "แปลงลิงก์โพสต์ Instagram/Facebook เป็นประกาศ embed — ใช้: !social <URL> "
-                "(หรือ !embed <URL>) แล้วกดยืนยันเพื่อโพสต์"
+                "สร้างประกาศโซเชียลมีเดีย — ใช้: !social (แนบรูปภาพกับข้อความนี้ได้) "
+                "แล้วกดปุ่มเพื่อกรอกหัวข้อ/รายละเอียด/ลิงก์รูปภาพในฟอร์ม จากนั้นระบบจะโพสต์ให้อัตโนมัติ"
             ),
-            "embed": "นามแฝงของ !social — ใช้: !embed <URL>",
+            "embed": "นามแฝงของ !social — ใช้: !embed",
         },
     },
 }

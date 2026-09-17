@@ -38,16 +38,16 @@
   joins/leaves atomic — `db.add_attendee` returns `False` on a duplicate
   instead of silently double-adding. Don't reintroduce a JSON attendee list.
 - `date_utils.py` — Thai/English date & time parsing for the event system.
-- `utils/social_scraper.py` — Instagram/Facebook metadata extraction: owned-
-  account Graph API → Meta oEmbed → Open Graph fallback, in that order, for
-  the social media feature. See the module docstring before changing the
-  data sources — it explains why login-based scraping (e.g. `instagrapi`),
-  Instagram's old `?__a=1` JSON endpoint, and headless-browser rendering are
-  all deliberately not used, and why like counts are only ever real for
-  posts from the school's own linked account (owned-account strategy).
 - `cogs/` — one file per feature area (`events_cog.py`, `fun_cog.py`,
   `feedback_cog.py`, `social_media_cog.py`), each with an `async def
   setup(bot)` that discord.py's `load_extension` calls.
+- `!social` used to take a URL and scrape Instagram/Facebook for metadata
+  (owned-account Graph API → Meta oEmbed → Open Graph fallback). That code
+  (`utils/social_scraper.py`) was removed after confirming live that
+  Instagram serves zero usable metadata to any non-browser request, even its
+  own public embed endpoint — see git history for the investigation if
+  you're tempted to rebuild URL-based scraping. `!social` is now a manual
+  composer (button → modal), which needs no external HTTP calls at all.
 
 ## Making changes
 
@@ -77,10 +77,29 @@
   evaluate even under `from __future__ import annotations`.
 - New persistent state goes in SQLite via `db.py` (add a table + helper
   functions there, mirror it in `schema.sql`), not a new in-memory dict.
-- A cog that needs an `aiohttp.ClientSession` should open it in
-  `async def cog_load(self)` and close it in `async def cog_unload(self)`
-  (see `SocialMediaCog`), not in `__init__` — `__init__` can't be async and
-  runs before the event loop guarantees are in place.
+- A cog that needs an `aiohttp.ClientSession` (or any other resource that
+  must be opened/closed around the bot's lifetime) should do it in
+  `async def cog_load(self)` / `async def cog_unload(self)`, not in
+  `__init__` — `__init__` can't be async and runs before the event loop
+  guarantees are in place.
+- `!event` and `!social` auto-delete the invoking command and every reply
+  sent via `ctx.send()` a few seconds after the command finishes, via
+  `common.track_replies_for_cleanup(ctx)` (called from `cog_before_invoke`)
+  and `common.schedule_reply_cleanup(ctx, delay)` (called from
+  `cog_after_invoke`). This only wraps `ctx.send` — a persistent
+  announcement must go through `channel.send()` on the *resolved* channel
+  object instead (as `event_create`/the social modal already do), never
+  `ctx.send`, or it'll get deleted along with the confirmation messages.
+  A command that needs to wait on a View/Modal before it can be considered
+  "done" (see `SocialMediaCog.social_cmd`) must actually await that
+  completion — including a hard ceiling via `asyncio.wait_for` in case the
+  user opens a modal and abandons it — since `cog_after_invoke` only fires
+  after the command coroutine returns, and firing early would delete the
+  button/prompt message before the user could act on it.
+- A Discord modal (`discord.ui.Modal`) can only contain text input fields —
+  there's no file/image upload component. If a form-based command needs an
+  image, take it from an attachment on the triggering message instead (see
+  `!social`), falling back to an image-URL text field in the modal.
 - Test manually against a private test server before opening a PR: run each
   changed command as both an admin and non-admin, and check the error path
   (missing args, bad member/role, missing permissions, bad date/time for
