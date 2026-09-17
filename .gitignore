@@ -2,5 +2,6 @@
 __pycache__/
 *.pyc
 bot.log
+school_bot.db
 .venv/
 venv/

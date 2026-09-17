@@ -8,11 +8,25 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
+
+import db
+from common import (
+    COLOR_DANGER,
+    COLOR_INFO,
+    COLOR_SUCCESS,
+    COLOR_WARNING,
+    PREFIX,
+    can_act_on,
+    get_or_create_role,
+    log_action,
+    make_embed,
+)
 
 # ============================================================================
 # CONFIGURATION
@@ -22,7 +36,6 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 WELCOME_CHANNEL_NAME = os.getenv("WELCOME_CHANNEL", "welcome")
-PREFIX = "!"
 
 MUTED_ROLE_NAME = "Muted"
 WARN_LIMIT_ALERT = 3
@@ -34,11 +47,12 @@ ROLE_EMOJIS = {
     "🏆": "Grade 12",
 }
 
-COLOR_SUCCESS = discord.Color.green()
-COLOR_INFO = discord.Color.blue()
-COLOR_WARNING = discord.Color.orange()
-COLOR_DANGER = discord.Color.red()
-COLOR_NEUTRAL = discord.Color.blurple()
+EXTENSIONS = (
+    "cogs.events_cog",
+    "cogs.fun_cog",
+    "cogs.feedback_cog",
+    "cogs.social_media_cog",
+)
 
 # ============================================================================
 # LOGGING
@@ -67,37 +81,17 @@ leaderboard: dict[int, dict[int, int]] = {}          # guild_id -> {user_id: poi
 warnings_log: dict[int, dict[int, list[dict]]] = {}  # guild_id -> {user_id: [warning, ...]}
 role_select_messages: dict[int, dict[str, str]] = {} # message_id -> {emoji: role_name}
 
-# ============================================================================
-# HELPERS
-# ============================================================================
+
+async def load_extensions() -> None:
+    for extension in EXTENSIONS:
+        try:
+            await bot.load_extension(extension)
+            log.info("Loaded extension: %s", extension)
+        except Exception:
+            log.exception("Failed to load extension: %s", extension)
 
 
-def make_embed(title: str, description: str = "", color: discord.Color = COLOR_NEUTRAL) -> discord.Embed:
-    embed = discord.Embed(title=title, description=description, color=color, timestamp=datetime.now(timezone.utc))
-    return embed
-
-
-def can_act_on(actor: discord.Member, target: discord.Member) -> bool:
-    """Return True if actor is allowed to moderate target (higher role, not self, not owner)."""
-    if actor.id == target.id:
-        return False
-    if target.id == target.guild.owner_id:
-        return False
-    return actor.top_role > target.top_role or actor.id == actor.guild.owner_id
-
-
-def log_action(guild: discord.Guild | None, message: str) -> None:
-    guild_name = guild.name if guild else "DM"
-    log.info("[%s] %s", guild_name, message)
-
-
-async def get_or_create_role(guild: discord.Guild, name: str, **kwargs) -> discord.Role:
-    role = discord.utils.get(guild.roles, name=name)
-    if role is None:
-        role = await guild.create_role(name=name, reason=f"Auto-created '{name}' role", **kwargs)
-        log_action(guild, f"Created missing role '{name}'")
-    return role
-
+bot.setup_hook = load_extensions
 
 # ============================================================================
 # EVENTS
@@ -215,6 +209,10 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
 
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ คุณไม่มีสิทธิในการใช้คำสั่งนี้")
+        return
+
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ กรุณารอ {error.retry_after:.0f} วินาทีก่อนใช้คำสั่งนี้อีกครั้ง")
         return
 
     if isinstance(error, commands.MissingRequiredArgument):
@@ -525,6 +523,39 @@ HELP_CATEGORIES = {
             "addpoint": "เพิ่มคะแนนให้สมาชิก (Admin) — ใช้: !addpoint @user [points]",
         },
     },
+    "events": {
+        "title": "🎉 กิจกรรม",
+        "commands": {
+            "event": (
+                'สร้างและจัดการกิจกรรม — ใช้: !event create "ชื่อ" "วันที่" "เวลา" "รายละเอียด" (Admin) | '
+                "!event list | !event details <id> | !event join <id> | !event leave <id> | !event delete <id> (Admin)"
+            ),
+        },
+    },
+    "fun": {
+        "title": "🎮 คำสั่งความบันเทิง",
+        "commands": {
+            "quote": "คำคมสุ่ม — ใช้: !quote",
+            "fact": "เกร็ดความรู้สุ่ม — ใช้: !fact",
+            "joke": "มุกฮาสุ่ม — ใช้: !joke",
+            "poll": 'สร้างโพลโหวต 2-4 ตัวเลือก — ใช้: !poll "คำถาม" "ตัวเลือก1" "ตัวเลือก2"',
+            "8ball": 'ถามลูกแก้ววิเศษ — ใช้: !8ball "คำถาม"',
+            "dice": "ทอยลูกเต๋า — ใช้: !dice [จำนวนหน้า]",
+            "compliment": "ส่งคำชม — ใช้: !compliment [@user]",
+        },
+    },
+    "feedback": {
+        "title": "💡 ข้อเสนอแนะและความคิดเห็น",
+        "commands": {
+            "suggest": 'ส่งข้อเสนอแนะ — ใช้: !suggest "ข้อความ" (แก้ไขได้ภายใน 5 นาที: !suggest edit <id> "ข้อความใหม่")',
+            "feedback": 'ส่งความคิดเห็น/แจ้งปัญหา — ใช้: !feedback "ข้อความ"',
+            "mysuggest": "ดูข้อเสนอแนะของตัวเอง — ใช้: !mysuggest [@user]",
+            "suggestion": (
+                "จัดการข้อเสนอแนะ (Admin) — ใช้: !suggestion list [status] | "
+                "!suggestion status <id> <status> | !suggestion delete <id>"
+            ),
+        },
+    },
     "moderation": {
         "title": "🛡️ คำสั่งผู้ดูแล",
         "commands": {
@@ -534,6 +565,20 @@ HELP_CATEGORIES = {
             "mute": "มิวท์สมาชิก (Admin) — ใช้: !mute @user",
             "warn": "ตักเตือนสมาชิก (Admin) — ใช้: !warn @user [reason]",
             "clear": "ลบข้อความ (Admin) — ใช้: !clear [count]",
+        },
+    },
+    "social": {
+        "title": "📱 โซเชียลมีเดีย",
+        "commands": {
+            "social_channel": (
+                "ตั้งค่าช่องประกาศโซเชียลมีเดีย (Admin) — ใช้: !social_channel set #channel | "
+                "!social_channel get | !social_channel reset"
+            ),
+            "social": (
+                "แปลงลิงก์โพสต์ Instagram/Facebook เป็นประกาศ embed — ใช้: !social <URL> "
+                "(หรือ !embed <URL>) แล้วกดยืนยันเพื่อโพสต์"
+            ),
+            "embed": "นามแฝงของ !social — ใช้: !embed <URL>",
         },
     },
 }
@@ -568,6 +613,12 @@ async def custom_help(ctx: commands.Context, command_name: str = None):
 def main():
     if not TOKEN:
         log.error("DISCORD_TOKEN not found. Create a .env file (see .env.example) with your bot token.")
+        raise SystemExit(1)
+
+    try:
+        db.init_db()
+    except sqlite3.Error:
+        log.exception("Failed to initialize the database")
         raise SystemExit(1)
 
     try:
