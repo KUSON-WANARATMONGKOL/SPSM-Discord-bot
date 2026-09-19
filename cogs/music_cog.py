@@ -15,10 +15,12 @@ logic in both !skip and the natural end-of-track handler.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Optional
 
+import aiohttp
 import discord
 import wavelink
 from discord.ext import commands
@@ -30,6 +32,7 @@ log = logging.getLogger("school_bot.music")
 LAVALINK_URI = os.getenv("LAVALINK_URI", "http://localhost:2333")
 LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD", "youshallnotpass")
 LAVALINK_IDENTIFIER = os.getenv("LAVALINK_IDENTIFIER", "MAIN")
+LAVALINK_RETRY_SECONDS = 15
 
 QUEUE_PAGE_SIZE = 10
 PROGRESS_BAR_LENGTH = 20
@@ -73,17 +76,39 @@ class MusicCog(commands.Cog, name="Music"):
 
     async def _connect_lavalink(self) -> None:
         await self.bot.wait_until_ready()
-        if wavelink.Pool.nodes:
-            return
-        node = wavelink.Node(uri=LAVALINK_URI, password=LAVALINK_PASSWORD, identifier=LAVALINK_IDENTIFIER)
-        try:
-            await wavelink.Pool.connect(nodes=[node], client=self.bot)
-        except Exception:
-            log.exception(
-                "Could not connect to Lavalink at %s — music commands will reply "
-                "'service unavailable' until a node is reachable.",
-                LAVALINK_URI,
+        # wavelink.Pool.connect() tries exactly once per call and swallows
+        # connection failures internally (logs, doesn't raise) rather than
+        # retrying — so on a fresh deploy where Lavalink's own container is
+        # still booting (very plausible on Railway: two services start
+        # independently, and Lavalink's Docker build + JVM boot + plugin
+        # download can easily outlast the bot's own startup), a single
+        # attempt here would race Lavalink and lose, permanently, until
+        # someone manually restarts the bot. Keep retrying until it connects.
+        #
+        # One aiohttp session is created up front and reused across retries —
+        # wavelink.Node() otherwise opens a new one every attempt, which would
+        # leak a session per failed retry for as long as Lavalink stays down.
+        session = aiohttp.ClientSession()
+        while not wavelink.Pool.nodes:
+            node = wavelink.Node(
+                uri=LAVALINK_URI, password=LAVALINK_PASSWORD, identifier=LAVALINK_IDENTIFIER, session=session
             )
+            try:
+                await wavelink.Pool.connect(nodes=[node], client=self.bot)
+            except Exception:
+                log.exception("Unexpected error connecting to Lavalink at %s", LAVALINK_URI)
+
+            if wavelink.Pool.nodes:
+                log.info("Connected to Lavalink at %s", LAVALINK_URI)
+                return
+
+            log.warning(
+                "Lavalink not reachable at %s yet — retrying in %ss "
+                "(music commands will reply 'service unavailable' until this succeeds)",
+                LAVALINK_URI,
+                LAVALINK_RETRY_SECONDS,
+            )
+            await asyncio.sleep(LAVALINK_RETRY_SECONDS)
 
     @commands.Cog.listener()
     async def on_wavelink_node_ready(self, payload: wavelink.NodeReadyEventPayload) -> None:
