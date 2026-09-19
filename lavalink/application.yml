@@ -1,0 +1,41 @@
+# Lavalink config for Railway deployment. No secrets live in this file —
+# lavalink.server.password is resolved from the LAVALINK_SERVER_PASSWORD
+# environment variable at container startup (Spring Boot placeholder syntax).
+# Set that variable in the Railway service's Variables tab, not here.
+#
+# See ../README.md "Music (Lavalink) setup" for the matching local dev setup,
+# and "Deploying Lavalink to Railway" for how this file gets used.
+
+server:
+  port: 2333
+  address: 0.0.0.0
+
+lavalink:
+  server:
+    password: "${LAVALINK_SERVER_PASSWORD}"
+    sources:
+      # Lavalink's built-in YouTube source is deprecated/broken — disabled in
+      # favor of the youtube-source plugin below, which replaces it.
+      youtube: false
+      soundcloud: true
+      bandcamp: true
+      twitch: true
+      vimeo: true
+      http: true
+      local: false
+  plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
+      repository: "https://maven.lavalink.dev/releases"
+
+metrics:
+  prometheus:
+    enabled: false
+    endpoint: /metrics
+
+sentry:
+  dsn: ""
+
+logging:
+  level:
+    root: INFO
+    lavalink: INFO

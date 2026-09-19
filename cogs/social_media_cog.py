@@ -3,12 +3,12 @@
 !social no longer takes a URL or scrapes Instagram/Facebook — that approach
 was dropped after confirming Instagram serves zero usable metadata to any
 non-browser request (see git history / prior conversation for the evidence).
-Instead it's a manual composer: the command posts a button, clicking it opens
-a Discord modal (title + description text fields), and submitting it posts
-the resulting embed to the configured channel. The image comes from an
-attachment on the !social message itself, or an optional "image URL" field
-in the modal if no attachment was given — Discord modals can't have a file
-upload field, so one of those two is the only way to attach a picture.
+Instead it's a manual composer: the command REQUIRES an image attached to
+the !social message itself (Discord modals can't have a file-upload field,
+so this is the only way to attach a picture — there's no "paste a link"
+fallback), then a button opens a Discord modal (title + description text
+fields), and submitting it posts the resulting embed to the configured
+channel using that attached image.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def build_social_announcement_embed(
 
 
 class SocialAnnouncementModal(discord.ui.Modal):
-    def __init__(self, channel: discord.TextChannel, attached_image_url: Optional[str], done: asyncio.Event) -> None:
+    def __init__(self, channel: discord.TextChannel, attached_image_url: str, done: asyncio.Event) -> None:
         super().__init__(title="สร้างประกาศโซเชียลมีเดีย")
         self.channel = channel
         self.attached_image_url = attached_image_url
@@ -78,34 +78,12 @@ class SocialAnnouncementModal(discord.ui.Modal):
         )
         self.add_item(self.description_input)
 
-        self.image_url_input: Optional[discord.ui.TextInput] = None
-        if not attached_image_url:
-            self.image_url_input = discord.ui.TextInput(
-                label="ลิงก์รูปภาพ (ถ้ามี)",
-                style=discord.TextStyle.short,
-                required=False,
-                placeholder="https://...",
-            )
-            self.add_item(self.image_url_input)
-
     async def on_submit(self, interaction: discord.Interaction) -> None:
         try:
             title = self.title_input.value.strip()
             description = self.description_input.value.strip()
 
-            image_url = self.attached_image_url
-            if not image_url and self.image_url_input is not None:
-                candidate = self.image_url_input.value.strip()
-                if candidate:
-                    if not candidate.startswith(("http://", "https://")):
-                        await interaction.response.send_message(
-                            "❌ ลิงก์รูปภาพไม่ถูกต้อง โปรดใช้ URL ที่ขึ้นต้นด้วย http:// หรือ https://",
-                            ephemeral=True,
-                        )
-                        return
-                    image_url = candidate
-
-            embed = build_social_announcement_embed(title, description, image_url, interaction.user)
+            embed = build_social_announcement_embed(title, description, self.attached_image_url, interaction.user)
 
             try:
                 message = await self.channel.send(embed=embed)
@@ -119,7 +97,7 @@ class SocialAnnouncementModal(discord.ui.Modal):
                     user_id=interaction.user.id,
                     title=title,
                     description=description,
-                    image_url=image_url,
+                    image_url=self.attached_image_url,
                     discord_message_id=message.id,
                     channel_id=self.channel.id,
                 )
@@ -141,7 +119,7 @@ class SocialAnnouncementModal(discord.ui.Modal):
 
 
 class SocialAnnouncementStartView(discord.ui.View):
-    def __init__(self, author_id: int, channel: discord.TextChannel, image_url: Optional[str]) -> None:
+    def __init__(self, author_id: int, channel: discord.TextChannel, image_url: str) -> None:
         super().__init__(timeout=BUTTON_TIMEOUT_SECONDS)
         self.author_id = author_id
         self.channel = channel
@@ -223,7 +201,7 @@ class SocialMediaCog(commands.Cog, name="SocialMedia"):
     @commands.command(name="social", aliases=["embed"])
     @commands.cooldown(1, 30, commands.BucketType.user)
     async def social_cmd(self, ctx: commands.Context) -> None:
-        """Open a form to compose and post a social-media-style announcement."""
+        """Attach an image to this command to open a form and post an announcement."""
         channel_id = db.get_social_channel(ctx.guild.id)
         if channel_id is None:
             await ctx.send("❌ ยังไม่ได้ตั้งค่าช่องประกาศ\nใช้: `!social_channel set #channel_name`")
@@ -239,13 +217,12 @@ class SocialMediaCog(commands.Cog, name="SocialMedia"):
             if (first.content_type or "").startswith("image/"):
                 image_url = first.url
 
+        if image_url is None:
+            await ctx.send("❌ กรุณาแนบรูปภาพมากับข้อความนี้ด้วย เช่น พิมพ์ `!social` แล้วแนบไฟล์รูปภาพ")
+            return
+
         view = SocialAnnouncementStartView(ctx.author.id, channel, image_url)
-        note = (
-            "แนบรูปภาพแล้ว ✅ กดปุ่มด้านล่างเพื่อกรอกหัวข้อและรายละเอียด"
-            if image_url
-            else "กดปุ่มด้านล่างเพื่อกรอกหัวข้อ รายละเอียด และลิงก์รูปภาพ (ถ้ามี)"
-        )
-        await ctx.send(note, view=view)
+        await ctx.send("แนบรูปภาพแล้ว ✅ กดปุ่มด้านล่างเพื่อกรอกหัวข้อและรายละเอียด", view=view)
 
         try:
             await asyncio.wait_for(view.done.wait(), timeout=OVERALL_WAIT_CEILING_SECONDS)

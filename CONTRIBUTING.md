@@ -97,9 +97,10 @@
   after the command coroutine returns, and firing early would delete the
   button/prompt message before the user could act on it.
 - A Discord modal (`discord.ui.Modal`) can only contain text input fields —
-  there's no file/image upload component. If a form-based command needs an
-  image, take it from an attachment on the triggering message instead (see
-  `!social`), falling back to an image-URL text field in the modal.
+  there's no file/image upload component. `!social` requires the image as an
+  attachment on the triggering message instead and rejects the command
+  up front if one isn't there, rather than offering an image-URL text field
+  as a fallback (deliberately simplified — one input method, not two).
 - Test manually against a private test server before opening a PR: run each
   changed command as both an admin and non-admin, and check the error path
   (missing args, bad member/role, missing permissions, bad date/time for

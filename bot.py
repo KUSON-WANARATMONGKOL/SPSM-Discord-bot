@@ -52,6 +52,7 @@ EXTENSIONS = (
     "cogs.fun_cog",
     "cogs.feedback_cog",
     "cogs.social_media_cog",
+    "cogs.music_cog",
 )
 
 # ============================================================================
@@ -570,6 +571,22 @@ HELP_CATEGORIES = {
             "clear": "ลบข้อความ (Admin) — ใช้: !clear [count]",
         },
     },
+    "music": {
+        "title": "🎵 เพลง (ต้องตั้งค่า Lavalink)",
+        "commands": {
+            "play": "เล่นเพลงจาก YouTube หรือเพิ่มเข้า queue — ใช้: !play <ชื่อเพลง หรือ URL>",
+            "pause": "หยุดเพลงชั่วคราว — ใช้: !pause",
+            "resume": "เล่นเพลงต่อ — ใช้: !resume",
+            "stop": "หยุดเพลงและล้าง queue — ใช้: !stop",
+            "skip": "ข้ามไปเพลงถัดไป — ใช้: !skip",
+            "queue": "ดู queue — ใช้: !queue [หน้า]",
+            "shuffle": "สับเปลี่ยน queue — ใช้: !shuffle",
+            "clearqueue": "ล้าง queue ทั้งหมด — ใช้: !clearqueue",
+            "volume": "ตั้งระดับเสียง 0-100 — ใช้: !volume <0-100>",
+            "loop": "ตั้งโหมดลูป — ใช้: !loop <off|one|all>",
+            "now": "ดูเพลงที่กำลังเล่นพร้อม progress bar — ใช้: !now",
+        },
+    },
     "social": {
         "title": "📱 โซเชียลมีเดีย",
         "commands": {
@@ -578,8 +595,8 @@ HELP_CATEGORIES = {
                 "!social_channel get | !social_channel reset"
             ),
             "social": (
-                "สร้างประกาศโซเชียลมีเดีย — ใช้: !social (แนบรูปภาพกับข้อความนี้ได้) "
-                "แล้วกดปุ่มเพื่อกรอกหัวข้อ/รายละเอียด/ลิงก์รูปภาพในฟอร์ม จากนั้นระบบจะโพสต์ให้อัตโนมัติ"
+                "สร้างประกาศโซเชียลมีเดีย — ใช้: !social พร้อมแนบรูปภาพมากับข้อความ (จำเป็น) "
+                "แล้วกดปุ่มเพื่อกรอกหัวข้อและรายละเอียดในฟอร์ม จากนั้นระบบจะโพสต์ให้อัตโนมัติ"
             ),
             "embed": "นามแฝงของ !social — ใช้: !embed",
         },
