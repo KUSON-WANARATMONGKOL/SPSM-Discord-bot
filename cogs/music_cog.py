@@ -25,7 +25,7 @@ import discord
 import wavelink
 from discord.ext import commands
 
-from common import make_embed
+from common import COLOR_DANGER, COLOR_SUCCESS, make_embed
 
 log = logging.getLogger("school_bot.music")
 
@@ -33,6 +33,7 @@ LAVALINK_URI = os.getenv("LAVALINK_URI", "http://localhost:2333")
 LAVALINK_PASSWORD = os.getenv("LAVALINK_PASSWORD", "youshallnotpass")
 LAVALINK_IDENTIFIER = os.getenv("LAVALINK_IDENTIFIER", "MAIN")
 LAVALINK_RETRY_SECONDS = 15
+LAVALINK_PROBE_TIMEOUT_SECONDS = 8
 
 QUEUE_PAGE_SIZE = 10
 PROGRESS_BAR_LENGTH = 20
@@ -67,6 +68,7 @@ def create_progress_bar(position_ms: int, duration_ms: int, length: int = PROGRE
 class MusicCog(commands.Cog, name="Music"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self._last_connect_error: Optional[str] = None
 
     async def cog_load(self) -> None:
         # Fire-and-forget: awaiting wait_until_ready() here directly would
@@ -74,45 +76,102 @@ class MusicCog(commands.Cog, name="Music"):
         # connection (and therefore READY) waits on.
         self.bot.loop.create_task(self._connect_lavalink())
 
+    async def _probe_lavalink(self, session: aiohttp.ClientSession) -> Optional[str]:
+        """Cheap, bounded-timeout HTTP preflight, run before ever calling
+        wavelink.Pool.connect(). This matters because wavelink's websocket
+        layer retries a plain connection failure (e.g. "connection refused"
+        because nothing is listening yet) internally, forever, with its own
+        backoff, and never raises — so handing a bad/unreachable LAVALINK_URI
+        straight to Pool.connect() looks IDENTICAL to "Lavalink is still
+        booting, give it a moment" from the caller's side: both just hang
+        with no error. This probe fails fast instead, and says specifically
+        *why* — wrong password vs. unreachable host vs. an unexpected
+        response — instead of leaving every failure mode looking the same.
+        """
+        url = f"{LAVALINK_URI.rstrip('/')}/version"
+        try:
+            async with session.get(
+                url,
+                headers={"Authorization": LAVALINK_PASSWORD},
+                timeout=aiohttp.ClientTimeout(total=LAVALINK_PROBE_TIMEOUT_SECONDS),
+            ) as resp:
+                if resp.status == 200:
+                    return None
+                if resp.status in (401, 403):
+                    return f"HTTP {resp.status} from {url} — LAVALINK_PASSWORD doesn't match the server's password"
+                return f"HTTP {resp.status} from {url} — unexpected response"
+        except asyncio.TimeoutError:
+            return (
+                f"timed out after {LAVALINK_PROBE_TIMEOUT_SECONDS}s reaching {url} "
+                "(host unreachable/still starting up, or LAVALINK_URI is wrong)"
+            )
+        except aiohttp.ClientConnectorError as exc:
+            return f"connection failed to {url}: {exc}"
+        except aiohttp.ClientError as exc:
+            return f"{type(exc).__name__} reaching {url}: {exc}"
+
     async def _connect_lavalink(self) -> None:
         await self.bot.wait_until_ready()
-        # wavelink.Pool.connect() tries exactly once per call and swallows
-        # connection failures internally (logs, doesn't raise) rather than
-        # retrying — so on a fresh deploy where Lavalink's own container is
-        # still booting (very plausible on Railway: two services start
-        # independently, and Lavalink's Docker build + JVM boot + plugin
-        # download can easily outlast the bot's own startup), a single
-        # attempt here would race Lavalink and lose, permanently, until
-        # someone manually restarts the bot. Keep retrying until it connects.
-        #
         # One aiohttp session is created up front and reused across retries —
         # wavelink.Node() otherwise opens a new one every attempt, which would
         # leak a session per failed retry for as long as Lavalink stays down.
         session = aiohttp.ClientSession()
         while not wavelink.Pool.nodes:
+            probe_error = await self._probe_lavalink(session)
+            if probe_error is not None:
+                self._last_connect_error = probe_error
+                log.warning("Lavalink not usable yet (%s) — retrying in %ss", probe_error, LAVALINK_RETRY_SECONDS)
+                await asyncio.sleep(LAVALINK_RETRY_SECONDS)
+                continue
+
             node = wavelink.Node(
                 uri=LAVALINK_URI, password=LAVALINK_PASSWORD, identifier=LAVALINK_IDENTIFIER, session=session
             )
             try:
                 await wavelink.Pool.connect(nodes=[node], client=self.bot)
-            except Exception:
+            except Exception as exc:
+                self._last_connect_error = f"wavelink raised {exc!r} while connecting"
                 log.exception("Unexpected error connecting to Lavalink at %s", LAVALINK_URI)
 
             if wavelink.Pool.nodes:
+                self._last_connect_error = None
                 log.info("Connected to Lavalink at %s", LAVALINK_URI)
                 return
 
-            log.warning(
-                "Lavalink not reachable at %s yet — retrying in %ss "
-                "(music commands will reply 'service unavailable' until this succeeds)",
-                LAVALINK_URI,
-                LAVALINK_RETRY_SECONDS,
-            )
+            if self._last_connect_error is None:
+                self._last_connect_error = (
+                    "HTTP preflight succeeded but wavelink's websocket handshake did not register a node "
+                    "(check the Lavalink logs for a rejected connection)"
+                )
+            log.warning("%s — retrying in %ss", self._last_connect_error, LAVALINK_RETRY_SECONDS)
             await asyncio.sleep(LAVALINK_RETRY_SECONDS)
 
     @commands.Cog.listener()
     async def on_wavelink_node_ready(self, payload: wavelink.NodeReadyEventPayload) -> None:
         log.info("Lavalink node ready: %s", payload.node.identifier)
+
+    @commands.command(name="musicstatus")
+    @commands.has_permissions(administrator=True)
+    async def music_status(self, ctx: commands.Context) -> None:
+        """Show Lavalink connection diagnostics (Admin only)."""
+        connected = bool(wavelink.Pool.nodes)
+        embed = make_embed(
+            title="🔧 Music service status",
+            color=COLOR_SUCCESS if connected else COLOR_DANGER,
+        )
+        embed.add_field(name="Status", value="✅ Connected" if connected else "❌ Not connected", inline=False)
+        embed.add_field(name="LAVALINK_URI", value=f"`{LAVALINK_URI}`", inline=False)
+        if connected:
+            for identifier, node in wavelink.Pool.nodes.items():
+                embed.add_field(name=f"Node: {identifier}", value=f"Players: {len(node.players)}", inline=False)
+        else:
+            embed.add_field(
+                name="Last error",
+                value=self._last_connect_error or "No connection attempt has completed yet",
+                inline=False,
+            )
+            embed.add_field(name="Retrying every", value=f"{LAVALINK_RETRY_SECONDS}s", inline=True)
+        await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
     # Voice/player helpers
@@ -214,6 +273,13 @@ class MusicCog(commands.Cog, name="Music"):
         is_url = query.startswith(("http://", "https://"))
         try:
             results = await wavelink.Playable.search(query if is_url else query, source=None if is_url else wavelink.TrackSource.YouTube)
+        except wavelink.LavalinkLoadException as exc:
+            # Lavalink itself rejected the query (age-restricted, region-locked,
+            # source plugin error, etc.) — surface its actual reason instead of
+            # a generic "search failed", since the fix differs per cause.
+            log.warning("Lavalink rejected query %r: %s", query, exc.error)
+            await ctx.send(f"❌ โหลดเพลงไม่สำเร็จ: {exc.error}\n❌ Failed to load: {exc.error}")
+            return
         except Exception:
             log.exception("Track search failed for query: %s", query)
             await ctx.send(f"❌ ค้นหาเพลงล้มเหลว: {query}\n❌ Search failed: {query}")

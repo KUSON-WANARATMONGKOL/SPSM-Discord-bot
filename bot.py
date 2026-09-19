@@ -585,6 +585,7 @@ HELP_CATEGORIES = {
             "volume": "ตั้งระดับเสียง 0-100 — ใช้: !volume <0-100>",
             "loop": "ตั้งโหมดลูป — ใช้: !loop <off|one|all>",
             "now": "ดูเพลงที่กำลังเล่นพร้อม progress bar — ใช้: !now",
+            "musicstatus": "เช็คสถานะการเชื่อมต่อ Lavalink พร้อมสาเหตุที่ผิดพลาด (Admin) — ใช้: !musicstatus",
         },
     },
     "social": {

@@ -187,10 +187,14 @@ separate Java process and cannot run inside the bot's own service.
 
 **Testing `!play` after deployment:**
 - Both Railway services show "Active", and the Lavalink service's logs show `Lavalink is ready to accept connections`.
+- Run `!musicstatus` in Discord first (Admin only) — it tells you exactly what's wrong instead of making you guess from "service unavailable": wrong `LAVALINK_URI`, wrong password, unreachable host/DNS failure, or connected-but-no-node. See "Diagnosing 'Music service unavailable'" below.
 - In Discord, join a voice channel and run `!play <song name>`.
-- "❌ Music service unavailable" → the bot can't reach Lavalink at all: re-check `LAVALINK_URI`/`LAVALINK_PASSWORD` on the bot service match the Lavalink service's actual values, and that both services are in the same Railway project *and* environment (private networking doesn't cross projects).
 - "❌ No tracks found" for an ordinary song name → Lavalink is reachable but the `youtube-source` plugin didn't load; check the Lavalink service's logs around startup for a `PluginManager` error.
 - `!now` shows a live progress bar once something is playing — a quick end-to-end sanity check.
+
+### Diagnosing "Music service unavailable"
+
+Run **`!musicstatus`** (Admin only) — it reports the exact connection state and, if not connected, the specific reason from the last attempt: HTTP 401/403 (wrong `LAVALINK_PASSWORD`), a connection failure (host unreachable / Lavalink not running), a DNS failure (`getaddrinfo failed` — usually a typo'd `LAVALINK_URI` or wrong Railway private hostname), or a timeout (still starting up). The bot retries the connection every 15 seconds on its own — you don't need to restart it once the underlying problem (e.g. the Lavalink service, or the variables) is fixed; wait ~15s and check `!musicstatus` again.
 
 | Command | Who | Description |
 |---|---|---|
@@ -204,8 +208,9 @@ separate Java process and cannot run inside the bot's own service.
 | `!volume <0-100>` | Everyone (same voice channel as bot) | Sets playback volume. |
 | `!loop <off\|one\|all>` | Everyone (same voice channel as bot) | No loop / repeat current track / repeat whole queue. |
 | `!now` (alias `!np`) | Everyone | Shows the current track with a progress bar. |
+| `!musicstatus` | Admin | Shows Lavalink connection status and, if disconnected, the specific reason why. |
 
-The bot leaves the voice channel automatically after a period of inactivity, and always requires the command author to be in the same voice channel to pause/resume/stop/skip/shuffle/clear/change volume/loop — `!queue` and `!now` are read-only and work from anywhere.
+The bot leaves the voice channel automatically after a period of inactivity, and always requires the command author to be in the same voice channel to pause/resume/stop/skip/shuffle/clear/change volume/loop — `!queue`, `!now`, and `!musicstatus` are read-only and work from anywhere.
 
 ## Notes on data storage
 
@@ -260,7 +265,8 @@ Manual smoke test after changes (see also [CONTRIBUTING.md](CONTRIBUTING.md)):
 - [ ] Leaving the button unclicked for 2 minutes, and separately opening the modal and closing it without submitting, both eventually let the command finish (no permanent hang).
 - [ ] `!help` and `!help event` / `!help suggest` / `!help poll` / `!help social` show the new commands.
 - [ ] For both `!event` and `!social` commands: a few seconds after the command finishes, the user's typed command and the bot's reply/prompt message in that channel disappear on their own — but the actual event/social announcement embed (posted to the configured channel) stays.
-- [ ] With no Lavalink server reachable, `!play anything` replies "service unavailable" — no crash, rest of the bot unaffected.
+- [ ] With no Lavalink server reachable, `!play anything` replies "service unavailable" — no crash, rest of the bot unaffected; `!musicstatus` shows "Not connected" with a specific reason (not just silence).
+- [ ] `!musicstatus` as non-admin is rejected; as admin, shows the correct reason for each failure mode: stop Lavalink (connection failure), set the wrong `LAVALINK_PASSWORD` (HTTP 401/403), and point `LAVALINK_URI` at a bad hostname (DNS failure) — confirm each gives a distinct, accurate message, then restore the correct values and confirm it recovers within ~15s without a bot restart.
 - [ ] With Lavalink running (and the `youtube-source` plugin installed): `!play <song name>` outside a voice channel → "must be in a voice channel" error; from inside one → bot joins and posts a "Now Playing" embed with a progress bar.
 - [ ] `!play <second song>` while one is already playing → "Added to queue" embed, does not interrupt the current track.
 - [ ] `!pause` / `!resume` toggle correctly; using either with nothing playing gives a friendly error.
